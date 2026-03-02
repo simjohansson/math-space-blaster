@@ -70,6 +70,13 @@ class Game {
   // Input
   private keys: Set<string> = new Set();
   
+  // Touch controls
+  private touchStartX: number = 0;
+  private touchStartY: number = 0;
+  private touchId: number | null = null;
+  private joystickActive: boolean = false;
+  private shootTouchId: number | null = null;
+  
   // Visual constants
   private readonly COLORS = {
     background: '#0a0a1a',
@@ -108,6 +115,11 @@ class Game {
     window.addEventListener('resize', () => this.resize());
     window.addEventListener('keydown', (e) => this.keys.add(e.code));
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
+    
+    // Touch controls
+    this.canvas.addEventListener('touchstart', (e) => this.handleTouchStart(e), { passive: false });
+    this.canvas.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
+    this.canvas.addEventListener('touchend', (e) => this.handleTouchEnd(e), { passive: false });
     
     this.gameLoop();
   }
@@ -291,9 +303,13 @@ class Game {
     
     // Spawn asteroids
     const now = Date.now();
-    const spawnInterval = Math.max(800, 2000 - this.level * 150);
-    if (now - this.lastAsteroidSpawn > spawnInterval && this.asteroids.length < 8 + this.level * 2) {
-      this.spawnAsteroid();
+    const spawnInterval = Math.max(400, 1500 - this.level * 100);
+    if (now - this.lastAsteroidSpawn > spawnInterval && this.asteroids.length < 15 + this.level * 3) {
+      // Spawn 2-3 asteroids at a time for more action
+      const asteroidsToSpawn = Math.min(3, 1 + Math.floor(this.level / 3));
+      for (let i = 0; i < asteroidsToSpawn; i++) {
+        this.spawnAsteroid();
+      }
       this.lastAsteroidSpawn = now;
     }
     
@@ -524,6 +540,9 @@ class Game {
     
     // Draw UI
     this.drawUI();
+    
+    // Draw touch controls
+    this.drawTouchControls();
   }
   
   private drawUI(): void {
@@ -565,7 +584,12 @@ class Game {
       this.ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
       this.ctx.font = '14px "Orbitron", sans-serif';
       this.ctx.textAlign = 'center';
-      this.ctx.fillText('Arrow Keys/WASD to move | SPACE to shoot', this.width / 2, this.height - 30);
+      const isTouch = 'ontouchstart' in window;
+      if (isTouch) {
+        this.ctx.fillText('Left: joystick to move | Right: tap to shoot', this.width / 2, this.height - 30);
+      } else {
+        this.ctx.fillText('Arrow Keys/WASD to move | SPACE to shoot', this.width / 2, this.height - 30);
+      }
     }
     
     // Game Over
@@ -627,6 +651,119 @@ class Game {
     this.lasers = [];
     this.particles = [];
     this.setNewTarget();
+  }
+  
+  // Touch control methods
+  private handleTouchStart(e: TouchEvent): void {
+    e.preventDefault();
+    const rect = this.canvas.getBoundingClientRect();
+    
+    for (let i = 0; i < e.touches.length; i++) {
+      const touch = e.touches[i];
+      const x = touch.clientX - rect.left;
+      const y = touch.clientY - rect.top;
+      
+      // Left half = joystick for movement
+      if (x < this.width / 2 && this.touchId === null) {
+        this.touchId = touch.identifier;
+        this.touchStartX = x;
+        this.touchStartY = y;
+        this.joystickActive = true;
+      } else if (x >= this.width / 2 && this.shootTouchId === null) {
+        // Right half = shoot
+        this.shootTouchId = touch.identifier;
+        this.keys.add('Space');
+      }
+    }
+  }
+  
+  private handleTouchMove(e: TouchEvent): void {
+    e.preventDefault();
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const touch = e.changedTouches[i];
+      if (touch.identifier === this.touchId) {
+        const rect = this.canvas.getBoundingClientRect();
+        const x = touch.clientX - rect.left;
+        const y = touch.clientY - rect.top;
+        
+        // Calculate joystick delta
+        const dx = x - this.touchStartX;
+        const dy = y - this.touchStartY;
+        
+        // Update ship angle based on joystick position
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > 10) {
+          this.ship.targetAngle = Math.atan2(dy, dx);
+        }
+        
+        // Set thrusting if joystick is pushed far enough
+        this.ship.thrusting = dist > 20;
+      }
+    }
+  }
+  
+  private handleTouchEnd(e: TouchEvent): void {
+    e.preventDefault();
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const touch = e.changedTouches[i];
+      if (touch.identifier === this.touchId) {
+        this.touchId = null;
+        this.joystickActive = false;
+        this.ship.thrusting = false;
+      }
+      if (touch.identifier === this.shootTouchId) {
+        this.shootTouchId = null;
+        this.keys.delete('Space');
+      }
+    }
+  }
+  
+  private drawTouchControls(): void {
+    if (!('ontouchstart' in window)) return;
+    
+    // Draw joystick on left side
+    const joystickX = 80;
+    const joystickY = this.height - 120;
+    const maxRadius = 50;
+    
+    // Base circle
+    this.ctx.strokeStyle = 'rgba(0, 255, 255, 0.3)';
+    this.ctx.lineWidth = 2;
+    this.ctx.beginPath();
+    this.ctx.arc(joystickX, joystickY, maxRadius, 0, Math.PI * 2);
+    this.ctx.stroke();
+    
+    // Stick position
+    let stickX = joystickX;
+    let stickY = joystickY;
+    
+    if (this.joystickActive) {
+      const angle = this.ship.targetAngle;
+      const thrust = this.ship.thrusting ? 0.7 : 0.3;
+      stickX = joystickX + Math.cos(angle) * maxRadius * thrust;
+      stickY = joystickY + Math.sin(angle) * maxRadius * thrust;
+    }
+    
+    // Stick
+    this.ctx.fillStyle = 'rgba(0, 255, 255, 0.5)';
+    this.ctx.beginPath();
+    this.ctx.arc(stickX, stickY, 20, 0, Math.PI * 2);
+    this.ctx.fill();
+    
+    // Shoot zone indicator on right
+    this.ctx.strokeStyle = 'rgba(255, 0, 100, 0.3)';
+    this.ctx.lineWidth = 2;
+    this.ctx.setLineDash([10, 10]);
+    this.ctx.beginPath();
+    this.ctx.arc(this.width - 80, this.height - 120, 40, 0, Math.PI * 2);
+    this.ctx.stroke();
+    this.ctx.setLineDash([]);
+    
+    // Shoot label
+    this.ctx.fillStyle = 'rgba(255, 0, 100, 0.5)';
+    this.ctx.font = '14px "Orbitron", sans-serif';
+    this.ctx.textAlign = 'center';
+    this.ctx.fillText('TAP', this.width - 80, this.height - 115);
   }
   
   private gameLoop = (): void => {
